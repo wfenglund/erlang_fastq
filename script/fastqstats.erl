@@ -9,8 +9,8 @@ fastq_tester([Element|Remainder], Directory, Suffix, Out_list) ->
 	RE_result = re:run(Element, Suffix, [{capture, none}]),
 	if
 		RE_result == match ->
-			Ele_path = string:concat(Directory, Element),
-			fastq_tester(Remainder, Directory, Suffix, lists:append(Out_list, [Ele_path]));
+			Ele_path = Directory ++ Element,
+			fastq_tester(Remainder, Directory, Suffix, [Out_list|[Ele_path]]);
 		RE_result == nomatch ->
 			fastq_tester(Remainder, Directory, Suffix, Out_list)
 	end.
@@ -56,8 +56,8 @@ sequence_extractor([Element|Remainder], Counter, In_list) ->
 
 % Function that takes a list of sequences and creates a map
 % with unique sequences and counts of each:
-unique_seq_finder([], Inmap) ->
-	Inmap;
+unique_seq_finder([], In_map) ->
+	In_map;
 
 unique_seq_finder([Element|Remainder], In_map) ->
 	Short_seq = string:sub_string(binary_to_list(Element), 1, 20),
@@ -76,7 +76,7 @@ file_looper([], In_list) ->
 file_looper([File|Remainder], In_list) ->
 	Bin_list = gzip_to_binary(File),
 	Out_list = sequence_extractor(Bin_list, 0, []),
-	file_looper(Remainder, lists:merge(In_list, Out_list)).
+	file_looper(Remainder, In_list ++ Out_list).
 
 % Function that loads all fastq-files and extracts the
 % individual sequences:
@@ -125,7 +125,7 @@ start() ->
 	Fastq_paths_f = fastq_identifier(File_folder, "1.fq.gz"),
 	Fastq_paths_r = fastq_identifier(File_folder, "2.fq.gz"),
 	io:fwrite("Identified fastq-files:~n"),
-	list_printer(lists:merge(Fastq_paths_f, Fastq_paths_r)),
+	list_printer(Fastq_paths_f ++ Fastq_paths_r),
 	io:fwrite("~n"),
 	Seq_map_f = seq_map_generator(Fastq_paths_f),
 	Seq_map_r = seq_map_generator(Fastq_paths_r),
