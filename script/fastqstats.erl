@@ -1,5 +1,5 @@
 -module(fastqstats).
--export([fastq_tester/4, fastq_identifier/2, list_printer/1, gzip_to_binary/1, sequence_extractor/3, unique_seq_finder/2, file_looper/2, seq_map_generator/1, print_seqs/2, make_seq_table/1, start/0]).
+-export([fastq_tester/4, fastq_identifier/2, list_printer/1, gzip_to_binary/1, sequence_extractor/3, unique_seq_finder/2, file_looper/2, seq_map_generator/1, seq_highlight/2, print_seqs/3, make_seq_table/2, start/0]).
 
 % Helper function to fastq_identifier():
 fastq_tester([], _, _, Out_list) ->
@@ -84,40 +84,54 @@ seq_map_generator(File_list) ->
 	Seq_list = file_looper(File_list, []),
 	unique_seq_finder(Seq_list, #{}).
 
+% Function that takes a sequence and a primer and
+% returns the sequence with the overlap in blue:
+seq_highlight(Seq, []) ->
+	Seq;
+
+seq_highlight(Seq, Primer) ->
+	case re:run(Seq, Primer, [{capture, none}]) == match of
+		true ->
+			re:replace(Seq, Primer, "\e[0;34m" ++ Primer ++ "\e[0;37m");
+		false ->
+			seq_highlight(Seq, lists:droplast(Primer))
+	end. 
+
 % Helper function to make_seq_table():
-print_seqs([], _) ->
+print_seqs([], _, _) ->
 	ok;
 
-print_seqs([{Seq, Num}|Remainder], Counter) ->
+print_seqs([{Seq, Num}|Remainder], Primer, Counter) ->
 	case Counter < 10 of
 		true ->
-			io:fwrite("~s\t~10B~n", [Seq, Num]),
-			print_seqs(Remainder, Counter + 1);
+			io:fwrite("~s\t~10B~n", [seq_highlight(Seq, Primer), Num]),
+			print_seqs(Remainder, Primer, Counter + 1);
 		false ->
 			ok
 	end.
 
 % Function that takes a map with sequences and counts and
 % generates a table:
-make_seq_table(Seq_map) ->
+make_seq_table(Seq_map, Primer) ->
 	io:fwrite("Sequence:\t\tFrequency:~n"),
 	Seq_list = maps:to_list(Seq_map),
 	Seq_list_sort = lists:keysort(2, Seq_list),
 	Seq_list_sort_rev = lists:reverse(Seq_list_sort),
-	print_seqs(Seq_list_sort_rev, 0).
+	print_seqs(Seq_list_sort_rev, Primer, 0).
 
 start() ->
 	File_folder = "../data/",
-	Fastq_paths_f = fastq_identifier(File_folder, "R1.fastq.gz"),
-	Fastq_paths_r = fastq_identifier(File_folder, "R2.fastq.gz"),
+	Primer_seq = "AAACTCGTGCCAGCCACC",
+	Fastq_paths_f = fastq_identifier(File_folder, "1.fq.gz"),
+	Fastq_paths_r = fastq_identifier(File_folder, "2.fq.gz"),
 	io:fwrite("Identified fastq-files:~n"),
 	list_printer(lists:merge(Fastq_paths_f, Fastq_paths_r)),
+	io:fwrite("~n"),
 	Seq_map_f = seq_map_generator(Fastq_paths_f),
 	Seq_map_r = seq_map_generator(Fastq_paths_r),
-	io:fwrite("~n"),
 	io:fwrite("Forward:~n"),
 	io:fwrite("__________________________________~n"),
-	make_seq_table(Seq_map_f),
+	make_seq_table(Seq_map_f, Primer_seq),
 	io:fwrite("~nReverse:~n"),
 	io:fwrite("__________________________________~n"),
-	make_seq_table(Seq_map_r).
+	make_seq_table(Seq_map_r, Primer_seq).
