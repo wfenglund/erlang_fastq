@@ -1,5 +1,5 @@
 -module(fastqstats).
--export([fastq_tester/4, fastq_identifier/2, list_printer/1, gzip_to_binary/1, unique_seq_finder/2, file_looper/2, seq_map_generator/1, seq_highlight/2, print_seqs/3, make_seq_table/2, start/0]).
+-export([fastq_tester/4, list_printer/1, gzip_to_binary/1, unique_seq_finder/2, file_looper/2, seq_map_generator/1, seq_highlight/2, print_seqs/3, make_seq_table/2, start/0]).
 
 % Helper function to fastq_identifier():
 fastq_tester([], _, _, Out_list) ->
@@ -14,11 +14,6 @@ fastq_tester([Element|Remainder], Directory, Suffix, Out_list) ->
 		RE_result == nomatch ->
 			fastq_tester(Remainder, Directory, Suffix, Out_list)
 	end.
-
-% Function that returns which files are fastq:
-fastq_identifier(Directory, Suffix) ->
-	{ok, File_list} = file:list_dir(Directory),
-	fastq_tester(File_list, Directory, Suffix, []).
 
 % Function that prints every element of a list:
 list_printer([]) ->
@@ -108,8 +103,9 @@ make_seq_table(Seq_map, Primer) ->
 start() ->
 	File_folder = "../data/",
 	Primer_seq = "AAACTCGTGCCAGCCACC",
-	Fastq_paths_f = fastq_identifier(File_folder, "1.fq.gz"),
-	Fastq_paths_r = fastq_identifier(File_folder, "2.fq.gz"),
+	{ok, File_list} = file:list_dir(File_folder),
+	Fastq_paths_f = fastq_tester(File_list, File_folder, "1.fq.gz", []),
+	Fastq_paths_r = fastq_tester(File_list, File_folder, "2.fq.gz", []),
 	io:fwrite("Identified fastq-files:~n"),
 	list_printer(Fastq_paths_f ++ Fastq_paths_r),
 	io:fwrite("~n"),
