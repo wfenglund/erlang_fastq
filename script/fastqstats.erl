@@ -1,5 +1,5 @@
 -module(fastqstats).
--export([fastq_tester/4, fastq_identifier/2, list_printer/1, gzip_to_binary/1, sequence_extractor/3, unique_seq_finder/2, file_looper/2, seq_map_generator/1, seq_highlight/2, print_seqs/3, make_seq_table/2, start/0]).
+-export([fastq_tester/4, fastq_identifier/2, list_printer/1, gzip_to_binary/1, unique_seq_finder/2, file_looper/2, seq_map_generator/1, seq_highlight/2, print_seqs/3, make_seq_table/2, start/0]).
 
 % Helper function to fastq_identifier():
 fastq_tester([], _, _, Out_list) ->
@@ -17,8 +17,7 @@ fastq_tester([Element|Remainder], Directory, Suffix, Out_list) ->
 
 % Function that returns which files are fastq:
 fastq_identifier(Directory, Suffix) ->
-	File_tuple = file:list_dir(Directory),
-	File_list = element(2, File_tuple),
+	{ok, File_list} = file:list_dir(Directory),
 	fastq_tester(File_list, Directory, Suffix, []).
 
 % Function that prints every element of a list:
@@ -36,24 +35,6 @@ gzip_to_binary(File_name) ->
 	Inflated_data = zlib:gunzip(File),
 	binary:split(Inflated_data, [<<"\n">>], [global]).
 
-% Function that extract every sequence from a fastq-list:
-sequence_extractor([], _, In_list) ->
-	In_list;
-
-sequence_extractor([Element|Remainder], Counter, In_list) ->
-	case Counter == 1 orelse ((Counter - 1) rem 4 == 0) of
-		true ->
-			Out_list = [Element|In_list];
-		false ->
-			Out_list = In_list
-	end,
-	case Counter =< 400000 of
-		true ->
-			sequence_extractor(Remainder, Counter + 1, Out_list);
-		false ->
-			sequence_extractor([], Counter, Out_list)
-	end.
-
 % Function that takes a list of sequences and creates a map
 % with unique sequences and counts of each:
 unique_seq_finder([], In_map) ->
@@ -69,14 +50,19 @@ unique_seq_finder([Element|Remainder], In_map) ->
 	end,
 	unique_seq_finder(Remainder, Out_map).
 
-% Helper function for seq_map_generator():
+% Function that takes a list of files and extracts the
+% first 100 000 sequences from each and returns the
+% sequences in a list:
 file_looper([], In_list) ->
 	In_list;
 
 file_looper([File|Remainder], In_list) ->
 	Bin_list = gzip_to_binary(File),
-	Out_list = sequence_extractor(Bin_list, 0, []),
-	file_looper(Remainder, In_list ++ Out_list).
+	Short = lists:sublist(Bin_list, 400000),
+	Seq_test = fun({X, _}) -> (X == 2 orelse X rem 4 == 2) end,
+	Filtered = lists:filter(Seq_test, lists:zip(lists:seq(1, length(Short)), Short)),
+	{_, Unzipped} = lists:unzip(Filtered),
+	file_looper(Remainder, In_list ++ Unzipped).
 
 % Function that loads all fastq-files and extracts the
 % individual sequences:
