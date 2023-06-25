@@ -1,5 +1,5 @@
 -module(fastqstats).
--export([fastq_tester/4, list_printer/1, gzip_to_binary/1, unique_seq_finder/2, file_looper/2, seq_map_generator/1, seq_highlight/2, print_seqs/3, make_seq_table/2, start/0]).
+-export([fastq_tester/4, list_printer/1, gzip_to_binary/1, unique_seq_finder/2, file_looper/2, seq_map_generator/1, server/1, supervisor/3, worker/2, seq_highlight/2, print_seqs/3, make_seq_table/2, start/0]).
 
 % Helper function to fastq_identifier():
 fastq_tester([], _, _, Out_list) ->
@@ -65,6 +65,53 @@ seq_map_generator(File_list) ->
 	Seq_list = file_looper(File_list, []),
 	unique_seq_finder(Seq_list, #{}).
 
+% Loop and distribute tasks to workers and stop workers
+% that requests tasks when all tasks are distributed:
+server(Tasks) ->
+	receive
+		{giveMeWork, Worker_PID} ->
+			case Tasks /= [] of
+				true ->
+					Worker_PID ! lists:nth(1, Tasks),
+					server(lists:nthtail(1, Tasks));
+				false ->
+					Worker_PID ! {workStop},
+					server(Tasks)
+			end;
+		_ ->
+			server(Tasks)
+	end.
+
+% Loop until she has recieved all data at which point she 
+% returns the full results and sends a finishing message
+% to start()-function:
+supervisor(Package, Start_PID, Tasks) ->
+	receive
+		{Direction, Results} ->
+			case (Tasks-1) > 0 of
+				true ->
+					supervisor([{Direction, Results}|Package], Start_PID, Tasks - 1);
+				false ->
+					Start_PID ! {allTasksDone, [{Direction, Results}|Package]}
+			end;
+		_ ->
+			supervisor(Package, Start_PID, Tasks)
+	end.
+
+% loop and request a task from hive and when done send the
+% results to the queen:
+worker(Server_PID, Super_PID) ->
+	Server_PID ! {giveMeWork, self()},
+	receive
+		{Direction, Task} ->
+			Super_PID ! {Direction, seq_map_generator(Task)},
+			worker(Server_PID, Super_PID);
+		{workStop} ->
+			ok;
+		_ ->
+			worker(Server_PID, Super_PID)
+	end.
+
 % Function that takes a sequence and a primer and
 % returns the sequence with the overlap in blue:
 seq_highlight(Seq, []) ->
@@ -101,19 +148,37 @@ make_seq_table(Seq_map, Primer) ->
 	print_seqs(Seq_list_sort_rev, Primer, 0).
 
 start() ->
+	% Set specifications:
 	File_folder = "../data/",
 	Primer_seq = "AAACTCGTGCCAGCCACC",
+
+	% Identify file paths:
 	{ok, File_list} = file:list_dir(File_folder),
 	Fastq_paths_f = fastq_tester(File_list, File_folder, "1.fq.gz", []),
 	Fastq_paths_r = fastq_tester(File_list, File_folder, "2.fq.gz", []),
 	io:fwrite("Identified fastq-files:~n"),
 	list_printer(Fastq_paths_f ++ Fastq_paths_r),
 	io:fwrite("~n"),
-	Seq_map_f = seq_map_generator(Fastq_paths_f),
-	Seq_map_r = seq_map_generator(Fastq_paths_r),
+	
+	% Spawn Processes for concurrent parsing of data:
+	Tasks = [{forward, Fastq_paths_f}, {reverse, Fastq_paths_r}],
+	Server_PID = spawn(fastqstats, server, [Tasks]),
+	Super_PID = spawn(fastqstats, supervisor, [[], self(), length(Tasks)]),
+	spawn(fastqstats, worker, [Server_PID, Super_PID]),
+	spawn(fastqstats, worker, [Server_PID, Super_PID]),
+	
+	% Receive parsed data:
+	receive
+		{allTasksDone, Package} ->
+			io:fwrite("~nall tasks are done.~n"),
+			Sorted = lists:sort(Package),
+			[{forward, For},{reverse, Rev}] = Sorted
+	end,
+	
+	% Print result table:
 	io:fwrite("Forward:~n"),
 	io:fwrite("__________________________________~n"),
-	make_seq_table(Seq_map_f, Primer_seq),
+	make_seq_table(For, Primer_seq),
 	io:fwrite("~nReverse:~n"),
 	io:fwrite("__________________________________~n"),
-	make_seq_table(Seq_map_r, Primer_seq).
+	make_seq_table(Rev, Primer_seq).
