@@ -10,7 +10,7 @@ fastq_tester([Element|Remainder], Directory, Suffix, Out_list) ->
 	if
 		RE_result == match ->
 			Ele_path = Directory ++ Element,
-			fastq_tester(Remainder, Directory, Suffix, [Out_list|[Ele_path]]);
+			fastq_tester(Remainder, Directory, Suffix, [Ele_path] ++ Out_list);
 		RE_result == nomatch ->
 			fastq_tester(Remainder, Directory, Suffix, Out_list)
 	end.
@@ -149,7 +149,7 @@ make_seq_table(Seq_map, Primer) ->
 
 start() ->
 	% Set specifications:
-	File_folder = "../data/",
+	File_folder = "../Raw_data/",
 	Primer_seq = "AAACTCGTGCCAGCCACC",
 
 	% Identify file paths:
