@@ -1,5 +1,8 @@
 -module(fastqstats).
--export([fastq_tester/4, gzip_to_binary/1, unique_seq_finder/2, file_looper/2, seq_map_generator/1, server/1, supervisor/3, worker/2, seq_highlight/2, print_seqs/3, make_seq_table/2, start/0]).
+-export([fastq_tester/4, supervisor/2, package_manager/3]).
+-export([file_reader/2, worker_launcher/2, gzip_to_binary/1]).
+-export([unique_seq_finder/2, seq_highlight/2, print_seqs/3]).
+-export([make_seq_table/2, start/0]).
 
 % Helper function to fastq_identifier():
 fastq_tester([], _, _, Out_list) ->
@@ -15,6 +18,76 @@ fastq_tester([Element|Remainder], Directory, Suffix, Out_list) ->
 			fastq_tester(Remainder, Directory, Suffix, Out_list)
 	end.
 
+% Function that collects forward and reverse packages from
+% package_manager() and sends them to start() when all both are
+% received:
+supervisor(Package, Start_PID) ->
+	receive
+		{Direction, Results} ->
+			case (length(Package) + 1) < 2 of
+				true ->
+					supervisor([{Direction, Results}] ++ Package, Start_PID);
+				false ->
+					Start_PID ! {allSeqsDone, [{Direction, Results}] ++ Package}
+			end;
+		_ ->
+			supervisor(Package, Start_PID)
+	end.
+
+% Function that receives individual parsed forward and
+% reverse files and puts them together and sends the
+% collected packages to supervisor():
+package_manager({Pack_F, Pack_R}, Start_PID, {Tasks_F, Tasks_R}) ->
+	receive
+		{forward, Results} ->
+			case (Tasks_F - 1) > 0 of
+				true ->
+					package_manager({Results ++ Pack_F, Pack_R},
+						     Start_PID,
+						     {Tasks_F - 1, Tasks_R});
+				false ->
+					Start_PID ! {forward, Results ++ Pack_F},
+					package_manager({Pack_F, Pack_R},
+						       Start_PID,
+						       {Tasks_F, Tasks_R})
+			end;
+		{reverse, Results} ->
+			case (Tasks_R - 1) > 0 of
+				true ->
+					package_manager({Pack_F, Results ++ Pack_R},
+						     Start_PID,
+						     {Tasks_F, Tasks_R - 1});
+				false ->
+					Start_PID ! {reverse, Results ++ Pack_R},
+					package_manager({Pack_F, Pack_R},
+						       Start_PID,
+						       {Tasks_F, Tasks_R})
+			end;
+		_ ->
+			package_manager({Pack_F, Pack_R}, Start_PID, {Tasks_F, Tasks_R})
+	end.
+
+% Function that takes a file and parses it and sends the
+% resulting list of sequences to a given PID:
+file_reader({Direction, File}, Pack_PID) ->
+	Bin_list = gzip_to_binary(File),
+	Short = lists:sublist(Bin_list, 400000),
+	Seq_test = fun({X, _}) -> (X == 2 orelse X rem 4 == 2) end,
+	Filtered = lists:filter(Seq_test, lists:zip(lists:seq(1, length(Short)), Short)),
+	{_, Unzipped} = lists:unzip(Filtered),
+	Seq_short = fun(H, T) -> [string:sub_string(binary_to_list(H), 1, 20)|T] end,
+	Shortened = lists:foldl(Seq_short, [], Unzipped),
+	Pack_PID ! {Direction, Shortened}.
+
+% Function that takes filenames and starts a process for
+% each:
+worker_launcher({_, []}, _) ->
+	ok;
+
+worker_launcher({Direction, [H|T]}, Pack_PID) ->
+	spawn(fastqstats, file_reader, [{Direction, H}, Pack_PID]),
+	worker_launcher({Direction, T}, Pack_PID).
+
 % Function that reads a gzipped file, extracts it and splits
 % the lines into a list:
 gzip_to_binary(File_name) ->
@@ -27,82 +100,14 @@ gzip_to_binary(File_name) ->
 unique_seq_finder([], In_map) ->
 	In_map;
 
-unique_seq_finder([Element|Remainder], In_map) ->
-	Short_seq = string:sub_string(binary_to_list(Element), 1, 20),
-	case maps:is_key(Short_seq, In_map) of
+unique_seq_finder([Seq|Remainder], In_map) ->
+	case maps:is_key(Seq, In_map) of
 		true ->
-			Out_map = maps:merge(In_map, #{Short_seq=>(maps:get(Short_seq, In_map)+1)});
+			Out_map = maps:merge(In_map, #{Seq=>(maps:get(Seq, In_map)+1)});
 		false ->
-			Out_map = maps:merge(In_map, #{Short_seq=>1})
+			Out_map = maps:merge(In_map, #{Seq=>1})
 	end,
 	unique_seq_finder(Remainder, Out_map).
-
-% Function that takes a list of files and extracts the
-% first 100 000 sequences from each and returns the
-% sequences in a list:
-file_looper([], In_list) ->
-	In_list;
-
-file_looper([File|Remainder], In_list) ->
-	Bin_list = gzip_to_binary(File),
-	Short = lists:sublist(Bin_list, 400000),
-	Seq_test = fun({X, _}) -> (X == 2 orelse X rem 4 == 2) end,
-	Filtered = lists:filter(Seq_test, lists:zip(lists:seq(1, length(Short)), Short)),
-	{_, Unzipped} = lists:unzip(Filtered),
-	file_looper(Remainder, In_list ++ Unzipped).
-
-% Function that loads all fastq-files and extracts the
-% individual sequences:
-seq_map_generator(File_list) ->
-	Seq_list = file_looper(File_list, []),
-	unique_seq_finder(Seq_list, #{}).
-
-% Loop and distribute tasks to workers and stop workers
-% that requests tasks when all tasks are distributed:
-server(Tasks) ->
-	receive
-		{giveMeWork, Worker_PID} ->
-			case Tasks /= [] of
-				true ->
-					Worker_PID ! lists:nth(1, Tasks),
-					server(lists:nthtail(1, Tasks));
-				false ->
-					Worker_PID ! {workStop},
-					server(Tasks)
-			end;
-		_ ->
-			server(Tasks)
-	end.
-
-% Loop until she has recieved all data at which point she 
-% returns the full results and sends a finishing message
-% to start()-function:
-supervisor(Package, Start_PID, Tasks) ->
-	receive
-		{Direction, Results} ->
-			case (Tasks-1) > 0 of
-				true ->
-					supervisor([{Direction, Results}|Package], Start_PID, Tasks - 1);
-				false ->
-					Start_PID ! {allTasksDone, [{Direction, Results}|Package]}
-			end;
-		_ ->
-			supervisor(Package, Start_PID, Tasks)
-	end.
-
-% loop and request a task from hive and when done send the
-% results to the queen:
-worker(Server_PID, Super_PID) ->
-	Server_PID ! {giveMeWork, self()},
-	receive
-		{Direction, Task} ->
-			Super_PID ! {Direction, seq_map_generator(Task)},
-			worker(Server_PID, Super_PID);
-		{workStop} ->
-			ok;
-		_ ->
-			worker(Server_PID, Super_PID)
-	end.
 
 % Function that takes a sequence and a primer and
 % returns the sequence with the overlap in blue:
@@ -139,40 +144,45 @@ make_seq_table(Seq_map, Primer) ->
 	Seq_list_sort_rev = lists:reverse(Seq_list_sort),
 	print_seqs(Seq_list_sort_rev, Primer, 0).
 
+% Main function:
 start() ->
 	% Set specifications:
-	File_folder = "../Raw_data/",
+	File_folder = "../Raw_data_2/",
 	Primer_seq = "AAACTCGTGCCAGCCACC",
 
 	% Identify file paths:
 	{ok, File_list} = file:list_dir(File_folder),
-	Paths_f = fastq_tester(File_list, File_folder, "1.fq.gz", []),
-	Paths_r = fastq_tester(File_list, File_folder, "2.fq.gz", []),
-	io:fwrite("Identified fastq-files:~n"),
-	lists:foreach(fun(X) -> io:fwrite("~p~n", [X]) end, Paths_f ++ Paths_r),	
+	Paths_F = fastq_tester(File_list, File_folder, "1.fq.gz", []),
+	Paths_R = fastq_tester(File_list, File_folder, "2.fq.gz", []),
+	io:fwrite("Identified ~p fastq-files:~n", [length(Paths_F ++ Paths_R)]),
+	lists:foreach(fun(X) -> io:fwrite("~p~n", [X]) end, Paths_F ++ Paths_R),	
 	io:fwrite("~n"),
 	
-	% Spawn Processes for concurrent parsing of data:
+	% Spawn processes for concurrent parsing of data:
 	io:fwrite("Spawning tasks.~n"),
-	Tasks = [{forward, Paths_f}, {reverse, Paths_r}],
-	Server_PID = spawn(fastqstats, server, [Tasks]),
-	Super_PID = spawn(fastqstats, supervisor, [[], self(), length(Tasks)]),
-	spawn(fastqstats, worker, [Server_PID, Super_PID]),
-	spawn(fastqstats, worker, [Server_PID, Super_PID]),
-	io:fwrite("Awaiting results.~n"),
+	Task_lengths = {length(Paths_F), length(Paths_R)},
+	Super_PID = spawn(fastqstats, supervisor, [[], self()]),
+	Pack_PID = spawn(fastqstats, package_manager, [{[], []}, Super_PID, Task_lengths]),
+	worker_launcher({forward, Paths_F}, Pack_PID),
+	worker_launcher({reverse, Paths_R}, Pack_PID),
 
-	% Receive parsed data:
 	receive
-		{allTasksDone, Package} ->
-			io:fwrite("All tasks are done.~n~n"),
-			Sorted = lists:sort(Package),
-			[{forward, For},{reverse, Rev}] = Sorted
+		{allSeqsDone, Package} ->
+			io:fwrite("-All tasks are done.~n")
 	end,
 	
+	% Create maps:
+	io:fwrite("Creating maps.~n"),
+	Sorted = lists:sort(Package),
+	[{forward, For},{reverse, Rev}] = Sorted,
+	For_map = unique_seq_finder(For, #{}),
+	Rev_map = unique_seq_finder(Rev, #{}),
+	io:fwrite("-All maps are done.~n"),
+	
 	% Print result table:
-	io:fwrite("Forward:~n"),
+	io:fwrite("~nForward:~n"),
 	io:fwrite("__________________________________~n"),
-	make_seq_table(For, Primer_seq),
+	make_seq_table(For_map, Primer_seq),
 	io:fwrite("~nReverse:~n"),
 	io:fwrite("__________________________________~n"),
-	make_seq_table(Rev, Primer_seq).
+	make_seq_table(Rev_map, Primer_seq).
