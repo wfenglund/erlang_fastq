@@ -147,7 +147,7 @@ make_seq_table(Seq_map, Primer) ->
 % Main function:
 start() ->
 	% Set specifications:
-	File_folder = "../Raw_data_2/",
+	File_folder = "../Raw_data/",
 	Primer_seq = "AAACTCGTGCCAGCCACC",
 
 	% Identify file paths:
